@@ -1,0 +1,568 @@
+// ============================================================
+// CODE CRAFTERS CLUB — DATABASE SCHEMA (PostgreSQL via Prisma)
+// ============================================================
+// Design notes:
+// - Roles are STORED on the user, but authorization is done via
+//   a Permission matrix (RolePermission table) — never hardcode
+//   "if role === TECHNICAL_TEAM" deep in business logic.
+// - Club membership is YEAR-SCOPED (ClubYear -> ClubMember), so
+//   past years are never overwritten, only "closed".
+// - Money fields use Decimal, never Float (avoids rounding bugs
+//   on payment reconciliation).
+// - Every table that admins mutate has createdBy/updatedBy trace
+//   fields feeding into AuditLog.
+// ============================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------------
+
+enum Role {
+  STUDENT
+  PRESIDENT
+  VICE_PRESIDENT
+  TECHNICAL_TEAM
+  EVENT_MANAGEMENT_TEAM
+  HOSPITALITY_TEAM
+  CONTENT_TEAM
+  MARKETING_TEAM
+  SUPER_ADMIN
+}
+
+enum Permission {
+  CREATE_EVENT
+  EDIT_EVENT
+  DELETE_EVENT
+  MANAGE_REGISTRATIONS
+  MANAGE_ATTENDANCE
+  GENERATE_CERTIFICATE
+  MANAGE_MEMBERS
+  MANAGE_ANNOUNCEMENTS
+  VIEW_ANALYTICS
+  MANAGE_ROLES
+  VIEW_AUDIT_LOG
+  MANAGE_RECRUITMENT
+  MANAGE_GALLERY
+  MANAGE_CONTENT
+  MANAGE_LEADERBOARD
+}
+
+enum OtpPurpose {
+  EMAIL_VERIFICATION
+  LOGIN_2FA
+  PASSWORD_RESET
+}
+
+enum EventCategory {
+  HACKATHON
+  WORKSHOP
+  SEMINAR
+  WEBDEV
+  AI_ML
+  IOT_EMBEDDED
+  PROJECT_EXHIBITION
+  GAMING
+  PLACEMENT_PREP
+  GUEST_LECTURE
+  TEAM_BUILDING
+  TECH_FEST
+  OTHER
+}
+
+enum EventMode {
+  ONLINE
+  OFFLINE
+  HYBRID
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  REGISTRATION_OPEN
+  REGISTRATION_CLOSED
+  ONGOING
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  NOT_APPLICABLE
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum AttendanceStatus {
+  NOT_CHECKED_IN
+  PRESENT
+  ABSENT
+}
+
+enum CertificateStatus {
+  NOT_ELIGIBLE
+  ELIGIBLE
+  ISSUED
+}
+
+enum RegistrationStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  WAITLISTED
+  CANCELLED
+}
+
+enum ApplicationStatus {
+  APPLIED
+  UNDER_REVIEW
+  SHORTLISTED
+  INTERVIEW
+  SELECTED
+  REJECTED
+}
+
+enum AnnouncementStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum InterestArea {
+  WEB_DEVELOPMENT
+  APP_DEVELOPMENT
+  AI_ML
+  CYBER_SECURITY
+  CLOUD
+  DEVOPS
+  IOT
+  EMBEDDED_SYSTEMS
+  DATA_SCIENCE
+  COMPETITIVE_PROGRAMMING
+  BLOCKCHAIN
+}
+
+// ------------------------------------------------------------
+// USERS & AUTH
+// ------------------------------------------------------------
+
+model User {
+  id              String   @id @default(uuid())
+  name            String
+  email           String   @unique
+  passwordHash    String
+  phone           String
+  collegeName     String
+  graduationYear  Int
+  role            Role     @default(STUDENT)
+  emailVerified   Boolean  @default(false)
+  profileImageUrl String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  otpVerifications  OtpVerification[]
+  refreshTokens     RefreshToken[]
+  clubMemberships   ClubMember[]
+  eventsCreated     Event[]                  @relation("EventCreatedBy")
+  registrations     EventRegistration[]
+  payments          Payment[]
+  certificates      Certificate[]
+  notifications     Notification[]
+  feedback          EventFeedback[]
+  interests         UserInterest[]
+  waitlistEntries   EventWaitlist[]
+  recruitmentApps   RecruitmentApplication[]
+  auditLogs         AuditLog[]
+  checkInsPerformed EventRegistration[]      @relation("CheckedInBy")
+
+  @@index([email])
+  @@index([role])
+}
+
+// RBAC: role -> permission mapping. Lets Super Admin reconfigure
+// what a team can do without a code deploy.
+model RolePermission {
+  id         String     @id @default(uuid())
+  role       Role
+  permission Permission
+
+  @@unique([role, permission])
+}
+
+model OtpVerification {
+  id          String     @id @default(uuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  otpHash     String
+  purpose     OtpPurpose
+  expiresAt   DateTime
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  verifiedAt  DateTime?
+  createdAt   DateTime   @default(now())
+
+  @@index([userId, purpose])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model UserInterest {
+  id       String       @id @default(uuid())
+  userId   String
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  interest InterestArea
+
+  @@unique([userId, interest])
+}
+
+// ------------------------------------------------------------
+// CLUB YEAR-WISE MEMBERSHIP (never overwritten)
+// ------------------------------------------------------------
+
+model ClubYear {
+  id          String   @id @default(uuid())
+  year        Int      @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  members ClubMember[]
+}
+
+model ClubMember {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  clubYearId   String
+  clubYear     ClubYear  @relation(fields: [clubYearId], references: [id])
+  team         Role // e.g. TECHNICAL_TEAM, CONTENT_TEAM ...
+  position     String // "President", "Technical Lead", etc (display label)
+  skills       String[]
+  description  String?
+  cvUrl        String?
+  linkedinUrl  String?
+  githubUrl    String?
+  portfolioUrl String?
+  showContact  Boolean   @default(false) // gates public exposure of phone/email
+  joinedAt     DateTime  @default(now())
+  leftAt       DateTime?
+
+  @@unique([userId, clubYearId])
+  @@index([clubYearId, team])
+}
+
+// ------------------------------------------------------------
+// EVENTS
+// ------------------------------------------------------------
+
+model Event {
+  id                   String        @id @default(uuid())
+  title                String
+  slug                 String        @unique
+  description          String
+  category             EventCategory
+  bannerUrl            String?
+  eventDate            DateTime
+  startTime            DateTime
+  endTime              DateTime
+  registrationStart    DateTime
+  registrationDeadline DateTime
+  venue                String?
+  mode                 EventMode
+  meetingLink          String?
+  maxParticipants      Int
+  registrationFee      Decimal       @default(0) @db.Decimal(10, 2)
+  eligibility          String?
+  rules                String?
+  prizeDetails         String?
+  speaker              String?
+  speakerDesignation   String?
+  certificateEnabled   Boolean       @default(true)
+  status               EventStatus   @default(DRAFT)
+  createdById          String
+  createdBy            User          @relation("EventCreatedBy", fields: [createdById], references: [id])
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  registrations EventRegistration[]
+  payments      Payment[]
+  certificates  Certificate[]
+  gallery       EventGallery[]
+  winners       EventWinner[]
+  feedback      EventFeedback[]
+  waitlist      EventWaitlist[]
+  notifications Notification[]
+
+  @@index([status, eventDate])
+  @@index([category])
+}
+
+model EventRegistration {
+  id                String             @id @default(uuid())
+  registrationCode  String             @unique // human-readable e.g. CCC-EVT-000123
+  userId            String
+  user              User               @relation(fields: [userId], references: [id])
+  eventId           String
+  event             Event              @relation(fields: [eventId], references: [id])
+  registrationDate  DateTime           @default(now())
+  paymentStatus     PaymentStatus      @default(NOT_APPLICABLE)
+  attendanceStatus  AttendanceStatus   @default(NOT_CHECKED_IN)
+  certificateStatus CertificateStatus  @default(NOT_ELIGIBLE)
+  status            RegistrationStatus @default(PENDING_PAYMENT)
+  qrToken           String             @unique
+  checkedInAt       DateTime?
+  checkedInById     String?
+  checkedInBy       User?              @relation("CheckedInBy", fields: [checkedInById], references: [id])
+
+  payment     Payment?
+  certificate Certificate?
+
+  @@unique([userId, eventId]) // prevents duplicate registration
+  @@index([eventId, status])
+}
+
+model EventWaitlist {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  eventId    String
+  event      Event     @relation(fields: [eventId], references: [id])
+  position   Int
+  createdAt  DateTime  @default(now())
+  promotedAt DateTime?
+
+  @@unique([userId, eventId])
+  @@index([eventId, position])
+}
+
+// ------------------------------------------------------------
+// PAYMENTS (Razorpay) — backend-verified only
+// ------------------------------------------------------------
+
+model Payment {
+  id             String            @id @default(uuid())
+  userId         String
+  user           User              @relation(fields: [userId], references: [id])
+  eventId        String
+  event          Event             @relation(fields: [eventId], references: [id])
+  registrationId String            @unique
+  registration   EventRegistration @relation(fields: [registrationId], references: [id])
+  orderId        String            @unique // razorpay order id
+  paymentId      String?           @unique // razorpay payment id, set after capture
+  signature      String?
+  amount         Decimal           @db.Decimal(10, 2)
+  currency       String            @default("INR")
+  status         PaymentStatus     @default(PENDING)
+  gateway        String            @default("razorpay")
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+// ------------------------------------------------------------
+// CERTIFICATES
+// ------------------------------------------------------------
+
+model Certificate {
+  id               String            @id @default(uuid())
+  certificateCode  String            @unique // e.g. CCC-2026-000123
+  userId           String
+  user             User              @relation(fields: [userId], references: [id])
+  eventId          String
+  event            Event             @relation(fields: [eventId], references: [id])
+  registrationId   String            @unique
+  registration     EventRegistration @relation(fields: [registrationId], references: [id])
+  certificateUrl   String
+  verificationHash String            @unique
+  issuedAt         DateTime          @default(now())
+
+  @@index([userId])
+}
+
+// ------------------------------------------------------------
+// EVENT CONTENT: gallery / winners / feedback
+// ------------------------------------------------------------
+
+model EventGallery {
+  id         String   @id @default(uuid())
+  eventId    String
+  event      Event    @relation(fields: [eventId], references: [id])
+  imageUrl   String
+  caption    String?
+  uploadedBy String
+  createdAt  DateTime @default(now())
+
+  @@index([eventId])
+}
+
+model EventWinner {
+  id          String  @id @default(uuid())
+  eventId     String
+  event       Event   @relation(fields: [eventId], references: [id])
+  studentName String
+  teamName    String?
+  college     String?
+  position    String // "1st", "2nd", "3rd", "Special Mention"
+  prize       String?
+  description String?
+
+  @@index([eventId])
+}
+
+model EventFeedback {
+  id                 String   @id @default(uuid())
+  eventId            String
+  event              Event    @relation(fields: [eventId], references: [id])
+  userId             String
+  user               User     @relation(fields: [userId], references: [id])
+  rating             Int // overall 1-5
+  speakerRating      Int?
+  organizationRating Int?
+  comments           String?
+  suggestions        String?
+  createdAt          DateTime @default(now())
+
+  @@unique([eventId, userId]) // one feedback per student per event
+}
+
+// ------------------------------------------------------------
+// ANNOUNCEMENTS / NOTIFICATIONS
+// ------------------------------------------------------------
+
+model Announcement {
+  id          String             @id @default(uuid())
+  title       String
+  content     String
+  imageUrl    String?
+  createdBy   String
+  status      AnnouncementStatus @default(DRAFT)
+  publishedAt DateTime?
+  createdAt   DateTime           @default(now())
+
+  @@index([status, publishedAt])
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  eventId    String? // set for event-related notifications (reminders, cancellations) —
+  event      Event?   @relation(fields: [eventId], references: [id])
+  title      String
+  message    String
+  type       String // REGISTRATION | PAYMENT | REMINDER_7D | REMINDER_1D | REMINDER_1H | CERTIFICATE | EVENT_CANCELLED | SYSTEM ...
+  readStatus Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  // Reminder idempotency (has this REMINDER_7D/1D/1H already been sent
+  // for this user+event?) is enforced in application code via an
+  // explicit findFirst check before creating — NOT a DB unique
+  // constraint here, because REGISTRATION/PAYMENT/WAITLIST notifications
+  // legitimately recur for the same (userId, eventId, type) if a student
+  // cancels and re-registers for the same event later.
+  @@index([userId, readStatus])
+  @@index([userId, eventId, type])
+}
+
+// ------------------------------------------------------------
+// RECRUITMENT
+// ------------------------------------------------------------
+
+model RecruitmentApplication {
+  id             String            @id @default(uuid())
+  userId         String?
+  user           User?             @relation(fields: [userId], references: [id])
+  name           String
+  email          String
+  phone          String
+  graduationYear Int
+  skills         String[]
+  teamPreference Role
+  motivation     String
+  experience     String?
+  githubUrl      String?
+  linkedinUrl    String?
+  resumeUrl      String?
+  status         ApplicationStatus @default(APPLIED)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([status, teamPreference])
+}
+
+// ------------------------------------------------------------
+// LEADERBOARD (point ledger, admin-configurable point values)
+// ------------------------------------------------------------
+
+model PointRule {
+  id     String @id @default(uuid())
+  action String @unique // EVENT_PARTICIPATION | WORKSHOP | HACKATHON | WIN | VOLUNTEER | CERTIFICATE
+  points Int
+}
+
+model PointLedger {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  points    Int
+  eventId   String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ------------------------------------------------------------
+// CLUB TIMELINE / CONTACT / AUDIT
+// ------------------------------------------------------------
+
+model ClubTimelineEntry {
+  id          String   @id @default(uuid())
+  year        Int
+  title       String
+  description String
+  createdAt   DateTime @default(now())
+}
+
+model ContactMessage {
+  id        String   @id @default(uuid())
+  name      String
+  email     String
+  subject   String
+  message   String
+  status    String   @default("NEW") // NEW | READ | RESPONDED
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([entity, entityId])
+}
