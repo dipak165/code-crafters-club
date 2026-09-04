@@ -11,7 +11,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "seed": "node prisma/seed.js",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",
