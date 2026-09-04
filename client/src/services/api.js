@@ -19,8 +19,8 @@ export function setUnauthorizedHandler(fn) {
 }
 
 const api = axios.create({
-  baseURL: '/api',
-  withCredentials: true, // sends the refresh-token cookie
+  baseURL: `${import.meta.env.VITE_API_URL}/api`,
+  withCredentials: true,
 });
 
 api.interceptors.request.use((config) => {
