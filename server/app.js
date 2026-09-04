@@ -2,7 +2,7 @@ const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
-const mongoSanitizeAlt = require('express-mongo-sanitize'); // also strips prototype-pollution-style keys from JSON bodies
+const mongoSanitizeAlt = require('express-mongo-sanitize');
 const hpp = require('hpp');
 
 const env = require('./config/env');
@@ -10,6 +10,7 @@ const errorMiddleware = require('./middleware/error.middleware');
 const { generalLimiter } = require('./middleware/rateLimiter.middleware');
 const AppError = require('./utils/AppError');
 
+// Routes
 const authRoutes = require('./routes/auth.routes');
 const eventRoutes = require('./routes/event.routes');
 const registrationRoutes = require('./routes/registration.routes');
@@ -28,26 +29,41 @@ const auditLogRoutes = require('./routes/auditLog.routes');
 
 const app = express();
 
+// --- Homepage ------------------------------------------------
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Welcome to Code Crafters Club API 🚀',
+    status: 'Server is running successfully',
+  });
+});
+
 // --- Security & core middleware --------------------------------
 app.use(helmet());
+
 app.use(
   cors({
     origin: env.clientUrl,
-    credentials: true, // required so the refresh-token cookie is sent
+    credentials: true,
   })
 );
-app.use(express.json({ limit: '10kb' })); // caps body size, mitigates payload-based DoS
+
+app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 app.use(mongoSanitizeAlt());
-app.use(hpp()); // guards against HTTP param pollution on query strings
+app.use(hpp());
 app.use(generalLimiter);
 
 // --- Health check ------------------------------------------------
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ success: true, message: 'Code Crafters Club API is running.' });
+  res.status(200).json({
+    success: true,
+    message: 'Code Crafters Club API is running.',
+  });
 });
 
-// --- Routes --------------------------------------------------------
+// ---------------- API Routes ----------------
+
 app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api', registrationRoutes);
@@ -64,12 +80,14 @@ app.use('/api', leaderboardRoutes);
 app.use('/api', userRoutes);
 app.use('/api', auditLogRoutes);
 
-// --- 404 handler ------------------------------------------------
+// ---------------- 404 Handler ----------------
+
 app.use((req, res, next) => {
   next(new AppError(`Route not found: ${req.originalUrl}`, 404));
 });
 
-// --- Centralized error handler (must be last) --------------------
+// ---------------- Error Handler ----------------
+
 app.use(errorMiddleware);
 
 module.exports = app;
