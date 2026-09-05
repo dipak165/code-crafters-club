@@ -28,6 +28,8 @@ const userRoutes = require('./routes/user.routes');
 const auditLogRoutes = require('./routes/auditLog.routes');
 
 const app = express();
+// Trust Render's reverse proxy
+app.set('trust proxy', 1);
 
 // --- Homepage ------------------------------------------------
 app.get('/', (req, res) => {
