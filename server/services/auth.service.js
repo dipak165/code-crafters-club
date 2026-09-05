@@ -114,10 +114,14 @@ otp,
 'account verification'
 );
 
-await sendMail({
-to: user.email,
-...mail,
-});
+try {
+  await sendMail({
+    to: user.email,
+    ...mail,
+  });
+} catch (error) {
+  console.error("Failed to send OTP email:", error.message);
+}
 
 return {
 email: user.email,
